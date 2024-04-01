@@ -362,17 +362,14 @@ func validatePayerAddress(address string) (bool, error) {
 	return validateAddressResponse.Result.IsValid && validateAddressResponse.Result.IsMine, nil
 }
 
-// readerFromString creates a ReadCloser from a string
 func readerFromString(s string) *ReadCloser {
 	return &ReadCloser{strings.NewReader(s)}
 }
 
-// ReadCloser is a simple implementation of io.ReadCloser
 type ReadCloser struct {
 	io.Reader
 }
 
-// Close does nothing in this implementation
 func (rc *ReadCloser) Close() error {
 	return nil
 }
@@ -738,23 +735,7 @@ func sendTransaction(fromAccount string, toAddress string, amount float64, comme
 	}
 	return txid, nil
 
-	// Check if the response contains a 'result' field
-	// if resultField, ok := result["result"]; ok {
-	// 	if (fromAccount == "*") {
 
-	// 	}
-
-	// 	if resultObj, ok := resultField.(map[string]interface{}); ok {
-	// 		// Check if the result object contains a 'txid' field
-	// 		if txid, ok := resultObj["txid"].(string); ok {
-	// 			// Return the captured txid
-	// 			return txid, nil
-	// 		}
-	// 	}
-	// }
-
-	// If txid is not found, return an error
-	//return "", fmt.Errorf("Failed to capture txid from the response")
 }
 
 // getBlockHeight sends an RPC request to the suacoin node to get the block height for a given block hash.
@@ -1202,13 +1183,6 @@ func createToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	//Verify the signature
-	// hash, err0 := generateTokenHash2(newToken)
-	// if err0 != nil {
-	// 	http.Error(w, "Error generating token hash", http.StatusUnauthorized)
-	// 	return
-	// }
-
 	// Verify the signature
 	err1 := verifySignatureWithRPC(newToken.Minter, newToken.Signature, newToken.Hash)
 	if err1 == false {
@@ -1250,9 +1224,9 @@ func createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var baseCost = "10000.00"
+	var baseCost = "9500.00"
 	if newToken.Mintable {
-		baseCost = "10000.00"
+		baseCost = "9500.00"
 	} else {
 		baseCost = "100.00"
 	}
@@ -1798,11 +1772,6 @@ func syncNodesList() {
 		// Save the received node list locally in the database
 		for address, node := range receivedNodesList {
 			registerNode(address)
-			// Update the last sync time if the node already exists
-			// _, err := nodes.UpdateOne(context.Background(), bson.M{"address": address}, bson.M{"$set": bson.M{"lastSync": node.LastSync}})
-			// if err != nil {
-			// 	log.Printf("Error updating node in MongoDB: %v", err)
-			// }
 			log.Printf("updating node in MongoDB: %v", node.LastSync)
 		}
 
@@ -2020,13 +1989,6 @@ func syncMintList() {
 					continue
 				}
 
-				// Verify signature
-				// hash, err := generateMintHash2(mint)
-				// if err != nil {
-				// 	log.Printf("Error generating mint hash: %v", err)
-				// 	continue
-				// }
-
 				minterAddress, err := getMinterAddress(mint.Token)
 				if err != nil {
 					log.Printf("Error getting Minter address: %v", err)
@@ -2165,13 +2127,6 @@ func isValidTransfer(transfer Transfer) bool {
 			return false
 		}
 	}
-
-	// Verify the signature
-	// hash, err0 := generateTransferHash2(transfer)
-	// if err0 != nil {
-	// 	log.Printf("Error generating transfer hash: %v", err0)
-	// 	return false
-	// }
 
 	// Verify the signature
 	isValidSignature := verifySignatureWithRPC(transfer.From, transfer.Signature, transfer.Hash)
@@ -2914,13 +2869,6 @@ func createMint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the signature
-	// hash, err0 := generateMintHash2(newMint)
-	// if err0 != nil {
-	// 	http.Error(w, "Error generating mint hash", http.StatusUnauthorized)
-	// 	return
-	// }
-
-	// Verify the signature
 	err1 := verifySignatureWithRPC(tokenList[0].Minter, newMint.Signature, newMint.Hash)
 	if err1 == false {
 		http.Error(w, "Signature verification failed", http.StatusUnauthorized)
@@ -3304,14 +3252,6 @@ func createTransfer(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("balance: ", existingBalanceSender.Balance)
 	fmt.Println("amount: ", amount)
 
-	// Check if the token exists
-	// var existingToken Token
-	// err2 := tokens.FindOne(context.Background(), bson.M{"id": newTransfer.Token}).Decode(&existingToken)
-	// if err2 != nil {
-	// 	http.Error(w, "Token not found", http.StatusNotFound)
-	// 	return
-	// }
-
 	formattedPayer := newTransfer.Payer
 	fmt.Printf("\"%s\"", formattedPayer)
 
@@ -3376,13 +3316,6 @@ func createTransfer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Transaction already exists in the blockchain", http.StatusUnauthorized)
 		return
 	}
-
-	// Verify the signature
-	// hash, err0 := generateTransferHash2(newTransfer)
-	// if err0 != nil {
-	// 	http.Error(w, "Error generating transfer hash", http.StatusUnauthorized)
-	// 	return
-	// }
 
 	// Verify the signature
 	err1 := verifySignatureWithRPC(newTransfer.From, newTransfer.Signature, newTransfer.Hash)
