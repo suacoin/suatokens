@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,6 +145,15 @@ type Balance struct {
 	Block    string               `json:"block"`
 	Date     time.Time            `json:"date"`
 	LastSync time.Time            `json:"lastSync"`
+}
+
+// TopRank represents the top rank data with rank, address, quantity, percentage, and value
+type TopRank struct {
+	Rank       int     `json:"rank"`
+	Address    string  `json:"address"`
+	Quantity   float64 `json:"quantity,string"`   // Convert to float64
+	Percentage float64 `json:"percentage,string"` // Convert to float64
+	Value      float64 `json:"value"`
 }
 
 // Node structure
@@ -1368,34 +1378,97 @@ func tokenExistsLocally(tokenID string) bool {
 
 // listTokens returns the list of tokens
 func listTokens(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	address := r.URL.Query().Get("address")
+	var filter = bson.M{}
+
+	if token != "" {
+		filter = bson.M{"id": token}
+	}
+
 	mutex.Lock()
 	defer mutex.Unlock()
 
-	// Fetch the list of tokens from MongoDB
-	cur, err := tokens.Find(context.Background(), bson.M{})
-	if err != nil {
-		log.Printf("Error fetching tokens from MongoDB: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(context.Background())
-
-	// Decode tokens from the cursor
-	tokenList = make(map[string]Token)
-	for cur.Next(context.Background()) {
-		var token Token
-		err := cur.Decode(&token)
+	if address != "" {
+		// Check if the balance exists for the specified address
+		var existingBalance Balance
+		err := balances.FindOne(context.Background(), bson.M{"address": address}).Decode(&existingBalance)
 		if err != nil {
-			log.Printf("Error decoding token from MongoDB: %v", err)
+			http.Error(w, "Balance not found", http.StatusNotFound)
+			return
+		}
+
+		// Fetch the list of token IDs associated with the address
+		var tokenIDs []string
+		cursor, err := balances.Find(context.Background(), bson.M{"address": address})
+		if err != nil {
+			log.Printf("Error fetching token IDs for address %s: %v", address, err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		tokenList[token.ID] = token
-	}
+		defer cursor.Close(context.Background())
+		for cursor.Next(context.Background()) {
+			var balance Balance
+			if err := cursor.Decode(&balance); err != nil {
+				log.Printf("Error decoding balance for address %s: %v", address, err)
+				continue
+			}
+			tokenIDs = append(tokenIDs, balance.Token)
+		}
+		if err := cursor.Err(); err != nil {
+			log.Printf("Error iterating cursor for address %s: %v", address, err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 
-	// Respond with the list of tokens in JSON format
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokenList)
+		// Map to store token details
+		tokenDetails := make(map[string]Token)
+
+		// Iterate over the list of token IDs
+		for _, tokenID := range tokenIDs {
+			var token Token
+			// Fetch token details from the database
+			err := tokens.FindOne(context.Background(), bson.M{"id": tokenID}).Decode(&token)
+			if err != nil {
+				log.Printf("Error fetching token details for ID %s: %v", tokenID, err)
+				continue
+			}
+			// Add token details to the map
+			tokenDetails[tokenID] = token
+		}
+
+		// Respond with the token details in JSON format
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tokenDetails)
+
+	} else {
+
+		// Fetch the list of tokens from MongoDB
+		cur, err := tokens.Find(context.Background(), filter)
+		if err != nil {
+			log.Printf("Error fetching tokens from MongoDB: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		defer cur.Close(context.Background())
+
+		// Decode tokens from the cursor
+		tokenList = make(map[string]Token)
+		for cur.Next(context.Background()) {
+			var token Token
+			err := cur.Decode(&token)
+			if err != nil {
+				log.Printf("Error decoding token from MongoDB: %v", err)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			tokenList[token.ID] = token
+		}
+
+		// Respond with the list of tokens in JSON format
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tokenList)
+	}
 }
 
 // GetBlockCount returns the block count from the Suacoin RPC server
@@ -2251,45 +2324,6 @@ func syncBalanceList() {
 	}
 }
 
-// Add a new handler function for handling the GET request with a token parameter
-func getTokensList(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-
-	if token == "" {
-		http.Error(w, "Token parameter is missing", http.StatusBadRequest)
-		return
-	}
-
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// Fetch the list of tokens from MongoDB
-	cur, err := tokens.Find(context.Background(), bson.M{"token": token})
-	if err != nil {
-		log.Printf("Error fetching tokens from MongoDB: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	defer cur.Close(context.Background())
-
-	// Decode tokens from the cursor
-	var tokenList []Token
-	for cur.Next(context.Background()) {
-		var token Token
-		err := cur.Decode(&token)
-		if err != nil {
-			log.Printf("Error decoding token from MongoDB: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		tokenList = append(tokenList, token)
-	}
-
-	// Respond with the list of tokens in JSON format
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokenList)
-}
-
 func removeSpace(s string) string {
 	rr := make([]rune, 0, len(s))
 	for _, r := range s {
@@ -2646,6 +2680,44 @@ func listMints(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(mintList)
 }
 
+func getMints(w http.ResponseWriter, r *http.Request) {
+	// Parse the query parameter "token" from the request
+	token := r.URL.Query().Get("id")
+	if token == "" {
+		http.Error(w, "Bad Request: Missing 'id' parameter", http.StatusBadRequest)
+		return
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// Fetch the list of mints for the specified token from MongoDB
+	cur, err := mints.Find(context.Background(), bson.M{"id": token})
+	if err != nil {
+		log.Printf("Error fetching mints for id from MongoDB: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(context.Background())
+
+	// Decode mints from the cursor
+	var mintList []Mint
+	for cur.Next(context.Background()) {
+		var mint Mint
+		err := cur.Decode(&mint)
+		if err != nil {
+			log.Printf("Error decoding mint for token from MongoDB: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		mintList = append(mintList, mint)
+	}
+
+	// Respond with the list of mints for the specified token in JSON format
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(mintList)
+}
+
 func listMintsForToken(w http.ResponseWriter, r *http.Request) {
 	// Parse the query parameter "token" from the request
 	token := r.URL.Query().Get("token")
@@ -2979,7 +3051,7 @@ func createMint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		mintTokenString := fmt.Sprintf("mintToken %s, %s, %s, %s, %s",
+		mintTokenString := fmt.Sprintf("mintToken %s, %s, %s, %s",
 			newMint.Token,
 			newMint.Block,
 			newMint.Amount.String(),
@@ -3122,6 +3194,84 @@ func createMint(w http.ResponseWriter, r *http.Request) {
 
 	// Respond with success message
 	json.NewEncoder(w).Encode(fmt.Sprintf("Mint with ID %s created", newMint.ID))
+}
+
+func getTotalTransfersForToken(w http.ResponseWriter, r *http.Request) {
+	// Extract the token ID from the query parameters
+	tokenID := r.URL.Query().Get("token")
+	if tokenID == "" {
+		http.Error(w, "Token ID is required in the query parameters", http.StatusBadRequest)
+		return
+	}
+
+	// Aggregate to count the number of transfers for the token
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{"token": tokenID}},
+		bson.M{"$count": "totalTransfers"},
+	}
+
+	cursor, err := transfers.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		log.Printf("Error aggregating transfers for token %s: %v", tokenID, err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	// Fetch the result
+	var result struct {
+		TotalTransfers int `json:"totalTransfers"`
+	}
+	if cursor.Next(context.Background()) {
+		err := cursor.Decode(&result)
+		if err != nil {
+			log.Printf("Error decoding result: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Respond with the total number of transfers for the token
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func getTransfer(w http.ResponseWriter, r *http.Request) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// Extract the tx ID from the query parameters
+	txID := r.URL.Query().Get("id")
+	if txID == "" {
+		http.Error(w, "Tx ID is required in the query parameters", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch the list of transfers for the specified token from MongoDB
+	cur, err := transfers.Find(context.Background(), bson.M{"id": txID})
+	if err != nil {
+		log.Printf("Error fetching transfer id %s from MongoDB: %v", txID, err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(context.Background())
+
+	// Decode transfers from the cursor
+	var transferList []Transfer
+	for cur.Next(context.Background()) {
+		var transfer Transfer
+		err := cur.Decode(&transfer)
+		if err != nil {
+			log.Printf("Error decoding transfer from MongoDB: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		transferList = append(transferList, transfer)
+	}
+
+	// Respond with the list of transfers for the specified token in JSON format
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(transferList)
 }
 
 func listTransfersForToken(w http.ResponseWriter, r *http.Request) {
@@ -3788,6 +3938,131 @@ func getExternalIP() string {
 	return ipResponse.IP
 }
 
+func getTokenHolders(w http.ResponseWriter, r *http.Request) {
+	// Parse query parameters
+	tokenID := r.URL.Query().Get("token")
+
+	// Validate the request parameters
+	if tokenID == "" {
+		http.Error(w, "The 'token' must be provided in the query parameters", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the token exists
+	var existingToken Token
+	err := tokens.FindOne(context.Background(), bson.M{"id": tokenID}).Decode(&existingToken)
+	if err != nil {
+		http.Error(w, "Token not found", http.StatusNotFound)
+		return
+	}
+
+	// Aggregate to count the number of holders for the token
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{"token": existingToken.ID}},
+		bson.M{"$group": bson.M{"_id": "$token", "holders": bson.M{"$addToSet": "$address"}}},
+		bson.M{"$project": bson.M{"_id": 0, "token": "$_id", "holdersCount": bson.M{"$size": "$holders"}}},
+	}
+
+	cursor, err := balances.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		http.Error(w, "Error processing request", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch the result
+	var result struct {
+		Token        string `json:"token"`
+		HoldersCount int    `json:"holdersCount"`
+	}
+	if cursor.Next(context.Background()) {
+		err := cursor.Decode(&result)
+		if err != nil {
+			http.Error(w, "Error decoding result", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Respond with the number of holders for the token
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// Define the handler function to get top 1000 ranks for a given token
+func getTopRanks(w http.ResponseWriter, r *http.Request) {
+	// Parse query parameters
+	tokenID := r.URL.Query().Get("token")
+	totalSupplyStr := r.URL.Query().Get("total_supply")
+
+	// Validate the request parameters
+	if tokenID == "" || totalSupplyStr == "" {
+		http.Error(w, "Both 'token' and 'total_supply' must be provided in the query parameters", http.StatusBadRequest)
+		return
+	}
+
+	// Convert total supply to float64
+	totalSupply, err := strconv.ParseFloat(totalSupplyStr, 64)
+	if err != nil {
+		http.Error(w, "Invalid 'total_supply' value", http.StatusBadRequest)
+		return
+	}
+
+	// Retrieve balances from the database for the given token
+	var balanceList []Balance
+	cursor, err := balances.Find(context.Background(), bson.M{"token": tokenID})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cursor.Close(context.Background())
+	for cursor.Next(context.Background()) {
+		var balance Balance
+		if err := cursor.Decode(&balance); err != nil {
+			log.Fatal(err)
+		}
+		balanceList = append(balanceList, balance)
+	}
+	if err := cursor.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Sort balances by quantity in descending order
+	sort.Slice(balanceList, func(i, j int) bool {
+		q1, _ := strconv.ParseFloat(balanceList[i].Balance.String(), 64)
+		q2, _ := strconv.ParseFloat(balanceList[j].Balance.String(), 64)
+		return q1 > q2
+	})
+
+	// Calculate the total quantity of tokens
+	var totalQuantity float64
+	for _, balance := range balanceList {
+		q, _ := strconv.ParseFloat(balance.Quantity.String(), 64)
+		totalQuantity += q
+	}
+
+	// Calculate and format top ranks with percentage and value
+	var topRanks []TopRank
+	for i, balance := range balanceList {
+		rank := i + 1
+		quantity, _ := strconv.ParseFloat(balance.Balance.String(), 64)
+		percentage := (quantity / totalSupply) * 100
+		value := (quantity / totalSupply) * 100
+		topRanks = append(topRanks, TopRank{
+			Rank:       rank,
+			Address:    balance.Address,
+			Quantity:   quantity,
+			Percentage: percentage,
+			Value:      value,
+		})
+		// Break loop if reached top 10000 ranks
+		if rank == 10000 {
+			break
+		}
+	}
+
+	// Respond with the top ranks in JSON format
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(topRanks)
+}
+
 func getBalance(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	tokenID := r.URL.Query().Get("token")
@@ -3875,14 +4150,16 @@ func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/token/create", createToken).Methods("POST")
 	router.HandleFunc("/token/list", listTokens).Methods("GET")
-	router.HandleFunc("/token/list", getTokensList).Methods("GET")
 	router.HandleFunc("/mints/create", createMint).Methods("POST")
 	router.HandleFunc("/mints/list", listMints).Methods("GET")
+	router.HandleFunc("/mints/get", getMints).Methods("GET").Queries("id", "{id}")
 	router.HandleFunc("/mints/list", listMintsForToken).Methods("GET").Queries("token", "{token}")
 	router.HandleFunc("/transfers/create", createTransfer).Methods("POST")
+	router.HandleFunc("/transfers/get", getTransfer).Methods("GET").Queries("id", "{id}")
 	router.HandleFunc("/transfers/list", listTransfersForToken).Methods("GET").Queries("token", "{token}")
 	router.HandleFunc("/transfers/list", listTransfersForTokenAndAddress).Methods("GET").
 		Queries("token", "{token}", "address", "{address}")
+	router.HandleFunc("/transfers/total", getTotalTransfersForToken).Methods("GET").Queries("token", "{token}")
 	router.HandleFunc("/node/list", listNodes).Methods("GET")
 	router.HandleFunc("/sync-tokens", syncTokensHandler).Methods("POST")
 	router.HandleFunc("/sync-mints", syncMintsHandler).Methods("POST")
@@ -3890,6 +4167,8 @@ func main() {
 	router.HandleFunc("/sync-balances", syncBalancesHandler).Methods("POST")
 	router.HandleFunc("/sync-nodes", syncNodesHandler).Methods("POST")
 	router.HandleFunc("/balance", getBalance).Methods("GET")
+	router.HandleFunc("/topranks", getTopRanks).Methods("GET")
+	router.HandleFunc("/holders", getTokenHolders).Methods("GET")
 	router.HandleFunc("/blockcount", BlockCountHandler).Methods("GET")
 	router.HandleFunc("/getavgfee", GetAvgFeeHandler)
 
