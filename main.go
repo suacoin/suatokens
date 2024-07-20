@@ -1800,28 +1800,32 @@ func getBalanceList() []byte {
 	return jsonBalanceList
 }
 
-// getRandomNodeAddresses returns a random subset of node addresses
+// getRandomNodeAddresses returns a random subset of node addresses that are online
 func getRandomNodeAddresses(allNodes map[string]Node, count int) []string {
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	// Extract addresses from the node map
-	var addresses []string
+	var respondingAddresses []string
 	for address := range allNodes {
-		addresses = append(addresses, address)
+		resp, err := http.Get("http://" + address + "/blockcount")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			respondingAddresses = append(respondingAddresses, address)
+			resp.Body.Close() // Close the response body to prevent resource leak
+		}
 	}
 
 	// Shuffle the addresses randomly
-	rand.Shuffle(len(addresses), func(i, j int) {
-		addresses[i], addresses[j] = addresses[j], addresses[i]
+	rand.Shuffle(len(respondingAddresses), func(i, j int) {
+		respondingAddresses[i], respondingAddresses[j] = respondingAddresses[j], respondingAddresses[i]
 	})
 
 	// Select the first 'count' addresses as the random subset
-	if count > len(addresses) {
-		count = len(addresses)
+	if count > len(respondingAddresses) {
+		count = len(respondingAddresses)
 	}
 
-	return addresses[:count]
+	return respondingAddresses[:count]
 }
 
 // syncNodesList synchronizes the token list with other nodes
@@ -1873,11 +1877,6 @@ func syncNodesList() {
 		// Save the received node list locally in the database
 		for address, node := range receivedNodesList {
 			registerNode(address)
-			// Update the last sync time if the node already exists
-			// _, err := nodes.UpdateOne(context.Background(), bson.M{"address": address}, bson.M{"$set": bson.M{"lastSync": node.LastSync}})
-			// if err != nil {
-			// 	log.Printf("Error updating node in MongoDB: %v", err)
-			// }
 			log.Printf("updating node in MongoDB: %v", node.LastSync)
 		}
 
@@ -2314,7 +2313,7 @@ func syncBalanceList() {
 			for _, balance := range receivedBalanceList {
 				// Check if the Address field is not empty
 				if balance.Address != "" {
-					registerBalance(balance.Address, balance)
+					registerBalance(balance.Address, balance.Token, balance)
 				}
 			}
 
@@ -2637,7 +2636,7 @@ func syncBalancesHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Check if the Address field is not empty
 			if balance.Address != "" {
-				registerBalance(balance.Address, balance)
+				registerBalance(balance.Address, balance.Token, balance)
 			}
 		}
 	}
@@ -3912,9 +3911,9 @@ func registerTransfer(id string, transfer Transfer) {
 }
 
 // registerBalance registers a new balance or updates an existing balance
-func registerBalance(address string, balance Balance) {
+func registerBalance(address string, token string, balance Balance) {
 	// Update the balance in the database
-	_, err := balances.ReplaceOne(context.Background(), bson.M{"address": address}, balance, options.Replace().SetUpsert(true))
+	_, err := balances.ReplaceOne(context.Background(), bson.M{"address": address, "token": token}, balance, options.Replace().SetUpsert(true))
 	if err != nil {
 		log.Printf("Error registering transfer in MongoDB: %v", err)
 	}
